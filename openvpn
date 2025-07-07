@@ -1,0 +1,266 @@
+#!/bin/bash
+
+# =================================================================
+# Script Installer OpenVPN Final (Non-Interaktif)
+# Target: Ubuntu 24.04 & Debian 12
+#
+# Fitur:
+# - Menggunakan `apt` untuk instalasi yang bersih.
+# - Membuat kunci & sertifikat (PKI) sendiri dengan Easy-RSA.
+# - Mengambil nama domain dari /root/domain untuk CA.
+# - Melewati instalasi Nginx dan konfigurasi UFW sesuai permintaan.
+# - Sepenuhnya otomatis dan non-interaktif.
+# - Membuat halaman download sederhana untuk file .ovpn.
+# =================================================================
+
+# Hentikan eksekusi script jika terjadi error
+set -e
+
+# --- Fungsi untuk mencetak pesan ---
+print_info() {
+    echo " "
+    echo "--> $1"
+    echo " "
+}
+
+# --- Fungsi untuk instalasi dependensi ---
+function install_dependencies() {
+    print_info "Memperbarui sistem dan menginstal dependensi..."
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    # Nginx dan UFW dihapus dari daftar instalasi
+    apt-get install -y openvpn easy-rsa zip curl
+}
+
+# --- Fungsi untuk setup Easy-RSA dan generate sertifikat ---
+function setup_pki() {
+    print_info "Menyiapkan Public Key Infrastructure (PKI) dengan Easy-RSA..."
+
+    # 1. Baca nama domain dari file /root/domain.
+    #    '2>/dev/null' digunakan untuk menyembunyikan pesan error jika file tidak ada.
+    domain=$(cat /root/domain 2>/dev/null)
+
+    # 2. Validasi: Pastikan variabel domain tidak kosong.
+    if [ -z "$domain" ]; then
+        echo "======================================================"
+        echo "    ERROR: File /root/domain tidak ada atau kosong!   "
+        echo "======================================================"
+        echo "Silakan buat file tersebut terlebih dahulu. Contoh:"
+        echo "echo 'vpn.domainanda.com' > /root/domain"
+        echo ""
+        echo "Lalu jalankan ulang script."
+        echo ""
+        exit 1
+    fi
+
+    # Bersihkan instalasi easy-rsa lama jika ada
+    rm -rf /etc/openvpn/easy-rsa
+    
+    # Buat struktur direktori easy-rsa
+    make-cadir /etc/openvpn/easy-rsa
+    cd /etc/openvpn/easy-rsa
+
+    # Inisialisasi PKI
+    ./easyrsa init-pki
+    
+    # Gunakan domain yang sudah dibaca sebagai Common Name untuk CA
+    export EASYRSA_REQ_CN="$domain"
+    
+    # Buat Certificate Authority (CA) secara non-interaktif
+    ./easyrsa build-ca nopass batch
+
+    # Buat kunci dan sertifikat untuk Server secara non-interaktif
+    ./easyrsa build-server-full server nopass batch
+
+    # Generate parameter Diffie-Hellman
+    ./easyrsa gen-dh
+
+    # Generate HMAC key untuk proteksi tambahan (serangan DoS)
+    openvpn --genkey --secret ta.key
+
+    # Salin file-file penting ke direktori server openvpn
+    cp pki/ca.crt /etc/openvpn/server/
+    cp pki/issued/server.crt /etc/openvpn/server/
+    cp pki/private/server.key /etc/openvpn/server/
+    cp pki/dh.pem /etc/openvpn/server/
+    cp ta.key /etc/openvpn/server/
+
+    # Kembali ke direktori root
+    cd
+}
+
+# --- Fungsi untuk membuat file konfigurasi server OpenVPN ---
+function create_server_configs() {
+    print_info "Membuat file konfigurasi server OpenVPN..."
+
+    # Konfigurasi untuk Server UDP (Port 2200)
+    cat > /etc/openvpn/server/server-udp.conf <<-END
+port 2200
+proto udp
+dev tun
+ca /etc/openvpn/server/ca.crt
+cert /etc/openvpn/server/server.crt
+key /etc/openvpn/server/server.key
+dh /etc/openvpn/server/dh.pem
+tls-auth /etc/openvpn/server/ta.key 0
+server 10.8.0.0 255.255.255.0
+ifconfig-pool-persist ipp.txt
+push "redirect-gateway def1 bypass-dhcp"
+push "dhcp-option DNS 8.8.8.8"
+push "dhcp-option DNS 1.1.1.1"
+keepalive 10 120
+cipher AES-256-GCM
+auth SHA256
+user nobody
+group nogroup
+persist-key
+persist-tun
+status /var/log/openvpn/openvpn-status-udp.log
+verb 3
+END
+
+    # Konfigurasi untuk Server TCP (Port 1194)
+    cat > /etc/openvpn/server/server-tcp.conf <<-END
+port 1194
+proto tcp
+dev tun
+ca /etc/openvpn/server/ca.crt
+cert /etc/openvpn/server/server.crt
+key /etc/openvpn/server/server.key
+dh /etc/openvpn/server/dh.pem
+tls-auth /etc/openvpn/server/ta.key 0
+server 10.9.0.0 255.255.255.0
+ifconfig-pool-persist ipp-tcp.txt
+push "redirect-gateway def1 bypass-dhcp"
+push "dhcp-option DNS 8.8.8.8"
+push "dhcp-option DNS 1.1.1.1"
+keepalive 10 120
+cipher AES-256-GCM
+auth SHA256
+user nobody
+group nogroup
+persist-key
+persist-tun
+status /var/log/openvpn/openvpn-status-tcp.log
+verb 3
+END
+}
+
+# --- Fungsi untuk konfigurasi sistem (forwarding) ---
+function configure_system() {
+    print_info "Mengaktifkan IP Forwarding..."
+
+    # Aktifkan IP Forwarding
+    echo 1 > /proc/sys/net/ipv4/ip_forward
+    sed -i 's/#net.ipv4.ip_forward=1/net.ipv4.ip_forward=1/g' /etc/sysctl.conf
+    
+    # Menampilkan peringatan karena konfigurasi UFW dilewati
+    echo ""
+    echo "#########################################################"
+    echo "# PERINGATAN: Langkah konfigurasi firewall UFW dilewati.  #"
+    echo "# Pastikan port 1194/tcp & 2200/udp sudah Anda buka     #"
+    echo "# di sistem firewall Anda yang lain (misal: Cloud FW).  #"
+    echo "#########################################################"
+}
+
+# --- Fungsi untuk membuat file konfigurasi klien (.ovpn) ---
+function create_client_configs() {
+    print_info "Membuat file konfigurasi klien (.ovpn)..."
+    
+    PUBLIC_IP=$(curl -s ifconfig.me)
+    
+    # Buat direktori web jika belum ada
+    mkdir -p /var/www/html
+
+    # Template dasar untuk file klien
+    cat > /etc/openvpn/client-template.ovpn <<-END
+client
+dev tun
+resolv-retry infinite
+nobind
+persist-key
+persist-tun
+remote-cert-tls server
+cipher AES-256-GCM
+auth SHA256
+verb 3
+<ca>
+$(cat /etc/openvpn/server/ca.crt)
+</ca>
+<tls-auth>
+$(cat /etc/openvpn/server/ta.key)
+</tls-auth>
+key-direction 1
+END
+
+    # Buat file spesifik untuk TCP dan UDP
+    cat /etc/openvpn/client-template.ovpn > /var/www/html/tcp.ovpn
+    echo -e "proto tcp\nremote $PUBLIC_IP 1194" >> /var/www/html/tcp.ovpn
+
+    cat /etc/openvpn/client-template.ovpn > /var/www/html/udp.ovpn
+    echo -e "proto udp\nremote $PUBLIC_IP 2200" >> /var/www/html/udp.ovpn
+
+    # Buat file ZIP untuk semua config
+    cd /var/www/html/
+    zip All-Configs.zip tcp.ovpn udp.ovpn
+    cd
+}
+
+# --- Fungsi untuk setup halaman download ---
+function setup_web_page() {
+    print_info "Menyiapkan halaman download..."
+    PUBLIC_IP=$(curl -s ifconfig.me)
+
+    cat > /var/www/html/index.html <<-END
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8" /><title>OVPN Config Download</title><meta name="viewport" content="width=device-width, initial-scale=1.0" /><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/4.3.1/css/bootstrap.min.css"></head><body><div class="container" style="margin-top:2em;"><div class="card"><div class="card-body"><h5 class="card-title">OVPN Config Download</h5><p>Server IP: $PUBLIC_IP</p><ul class="list-group">
+<li class="list-group-item"><a href="/tcp.ovpn" class="btn btn-primary">Download TCP (1194)</a></li>
+<li class="list-group-item"><a href="/udp.ovpn" class="btn btn-success">Download UDP (2200)</a></li>
+<li class="list-group-item"><a href="/All-Configs.zip" class="btn btn-info">Download All (ZIP)</a></li>
+</ul></div></div></div></body></html>
+END
+}
+
+# --- Fungsi utama untuk menjalankan semua langkah ---
+function main() {
+    # Pastikan script dijalankan sebagai root
+    if [ "$(id -u)" -ne 0 ]; then
+        echo "Script ini harus dijalankan dengan hak akses root atau sudo."
+        exit 1
+    fi
+
+    install_dependencies
+    setup_pki
+    create_server_configs
+    configure_system
+    create_client_configs
+    setup_web_page
+
+    print_info "Menjalankan dan mengaktifkan layanan..."
+    # Buat direktori log agar layanan tidak gagal
+    mkdir -p /var/log/openvpn
+    
+    # Jalankan dan aktifkan layanan OpenVPN menggunakan template systemd
+    systemctl enable --now openvpn-server@server-tcp.service
+    systemctl enable --now openvpn-server@server-udp.service
+    
+    # Restart Nginx untuk menyajikan halaman download
+    # Perintah ini diasumsikan berhasil karena Anda sudah punya Nginx
+    systemctl restart nginx
+
+    PUBLIC_IP=$(curl -s ifconfig.me)
+    print_info "Instalasi Selesai!"
+    echo "========================================================"
+    echo "Halaman download konfigurasi Anda tersedia di:"
+    echo "http://$PUBLIC_IP/"
+    echo "========================================================"
+    echo " "
+    echo "Cek status layanan dengan:"
+    echo "sudo systemctl status openvpn-server@server-tcp.service"
+    echo "sudo systemctl status openvpn-server@server-udp.service"
+    echo " "
+}
+
+# Panggil fungsi main untuk memulai eksekusi
+main
