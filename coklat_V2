@@ -78,7 +78,7 @@ clear
 MYIP=$(curl -sS ipv4.icanhazip.com)
 echo -e "\e[32mloading...\e[0m"
 clear
-izinsc="https://raw.githubusercontent.com/hokagelegend9999/ijin/refs/heads/main/coklat"
+izinsc="https://github.com/hokagelegend9999/ijin/raw/refs/heads/main/coklatv2"
 rm -f /usr/bin/user
 username=$(curl ${izinsc} | grep $MYIP | awk '{print $2}')
 echo "$username" >/usr/bin/user
@@ -108,7 +108,7 @@ sts="${Error}"
 fi
 echo -e "\e[32mloading...\e[0m"
 clear
-REPO="https://raw.githubusercontent.com/hokagelegend9999/coklat/refs/heads/main/"
+REPO="https://raw.githubusercontent.com/hokagelegend9999/coklatV2/refs/heads/main/"
 start=$(date +%s)
 secs_to_human() {
 echo "Installation time : $((${1} / 3600)) hours $(((${1} / 60) % 60)) minute's $((${1} % 60)) seconds"
@@ -176,6 +176,8 @@ echo "Setup Dependencies $(cat /etc/os-release | grep -w PRETTY_NAME | head -n1 
 sudo apt update -y
 apt-get install --no-install-recommends software-properties-common
 sudo apt install -y haproxy
+else
+echo -e " Your OS Is Not Supported ( ${YELLOW}$(cat /etc/os-release | grep -w PRETTY_NAME | head -n1 | sed 's/=//g' | sed 's/"//g' | sed 's/PRETTY_NAME//g')${FONT} )"
 fi
 }
 clear
@@ -531,36 +533,76 @@ print_success "SSHD"
 }
 clear
 function ins_dropbear(){
-clear
-print_install "Menginstall Dropbear"
-apt-get install dropbear -y > /dev/null 2>&1
-wget -q -O /etc/default/dropbear "${REPO}Cfg/dropbear.conf"
-chmod +x /etc/default/dropbear
-/etc/init.d/dropbear restart
-/etc/init.d/dropbear status
-print_success "Dropbear"
+    clear
+    # Asumsi fungsi print_install dan print_success sudah ada di script Anda
+    print_install "Menginstall Dropbear"
+
+    # 1. Install Dropbear, jangan sembunyikan output jika ada error
+    #    Menambahkan sudo agar lebih jelas dan aman
+    sudo apt-get install dropbear -y
+    if [ $? -ne 0 ]; then
+        echo "Gagal menginstall Dropbear. Menghentikan script."
+        exit 1
+    fi
+
+    # 2. Download file konfigurasi.
+    #    Memberi tahu user jika download gagal.
+    echo "Mengunduh file konfigurasi Dropbear..."
+    sudo wget -O /etc/default/dropbear "${REPO}Cfg/dropbear.conf"
+    if [ $? -ne 0 ]; then
+        echo "Gagal mengunduh file konfigurasi dari ${REPO}Cfg/dropbear.conf"
+        exit 1
+    fi
+
+    # 3. Atur izin yang benar untuk file konfigurasi (chmod 644, bukan +x)
+    sudo chmod 644 /etc/default/dropbear
+
+    # 4. Gunakan 'systemctl' untuk me-restart dan cek status (standar modern)
+    echo "Merestart layanan Dropbear..."
+    sudo systemctl restart dropbear
+    
+    echo "Status layanan Dropbear:"
+    sudo systemctl status dropbear --no-pager -l
+
+    print_success "Dropbear"
 }
 clear
-function ins_vnstat(){
-clear
-print_install "Menginstall Vnstat"
-apt -y install vnstat > /dev/null 2>&1
-/etc/init.d/vnstat restart
-apt -y install libsqlite3-dev > /dev/null 2>&1
-wget https://humdi.net/vnstat/vnstat-2.6.tar.gz
-tar zxvf vnstat-2.6.tar.gz
-cd vnstat-2.6
-./configure --prefix=/usr --sysconfdir=/etc && make && make install
-cd
-vnstat -u -i $NET
-sed -i 's/Interface "'""eth0""'"/Interface "'""$NET""'"/g' /etc/vnstat.conf
-chown vnstat:vnstat /var/lib/vnstat -R
-systemctl enable vnstat
-/etc/init.d/vnstat restart
-/etc/init.d/vnstat status
-rm -f /root/vnstat-2.6.tar.gz
-rm -rf /root/vnstat-2.6
-print_success "Vnstat"
+function ins_vnstat_apt(){
+    clear
+    print_install "Menginstall Vnstat via APT"
+
+    # 1. Install vnstat dari repository. Jangan sembunyikan output error.
+    sudo apt-get update
+    sudo apt-get install -y vnstat
+    if [ $? -ne 0 ]; then
+        echo "Gagal menginstall Vnstat dari APT. Menghentikan proses."
+        exit 1
+    fi
+
+    # 2. Hentikan layanan sementara untuk konfigurasi yang aman
+    sudo systemctl stop vnstat
+
+    # 3. Perbaiki perintah 'sed' untuk mengganti interface di file konfigurasi
+    #    Gunakan double quote agar variabel $NET bisa terbaca.
+    #    Regex '^Interface .*' lebih andal daripada mencari 'eth0'
+    sudo sed -i "s/^Interface .*/Interface \"$NET\"/" /etc/vnstat.conf
+
+    # 4. Update database untuk interface yang baru
+    echo "Membuat/Update database untuk interface: $NET"
+    sudo vnstat -u -i $NET --force
+
+    # 5. Pastikan ownership direktori database benar
+    sudo chown vnstat:vnstat /var/lib/vnstat/ -R
+    
+    # 6. Enable dan Restart layanan menggunakan systemctl
+    echo "Mengaktifkan dan merestart layanan vnstat..."
+    sudo systemctl enable vnstat
+    sudo systemctl restart vnstat
+    
+    echo "Status layanan Vnstat:"
+    sudo systemctl status vnstat --no-pager -l
+
+    print_success "Vnstat (via APT)"
 }
 function ins_openvpn(){
 clear
