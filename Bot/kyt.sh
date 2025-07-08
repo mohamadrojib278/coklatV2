@@ -18,6 +18,7 @@ rm bot.*
 apt update && apt upgrade
 apt install neofetch -y
 apt install python3 python3-pip git
+sudo apt install python3-telethon -y
 cd /usr/bin
 wget https://github.com/hokagelegend9999/coklat/raw/refs/heads/main/Bot/kyt.zip
 unzip bot.zip
