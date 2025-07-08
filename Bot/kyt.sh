@@ -19,12 +19,21 @@ apt update && apt upgrade
 apt install neofetch -y
 apt install python3 python3-pip git
 sudo apt install python3-telethon -y
-cd /usr/bin
+# 1. Pindah ke direktori /tmp untuk bekerja
+cd /tmp
+
+# 2. UNDUH ULANG FILE ZIP (INI BAGIAN PENTING YANG HILANG)
 wget https://github.com/hokagelegend9999/coklat/raw/refs/heads/main/Bot/kyt.zip
-unzip bot.zip
-mv bot/* /usr/bin
-chmod +x /usr/bin/*
-rm -rf bot.zip
+# 3. Ekstrak file zip
+unzip -o kyt.zip
+# 4. Pindahkan SEMUA skrip dari folder shell/bot ke lokasi yang benar
+sudo mv kyt/shell/bot/* /usr/bin/
+# 5. Berikan izin eksekusi pada semua skrip bot
+sudo chmod +x /usr/bin/bot*
+# 6. Hapus folder dan file sisa yang tidak terpakai
+rm -rf kyt
+rm -f kyt.zip
+echo "PROSES SELESAI. Semua skrip bantuan sudah berhasil dipindahkan."
 clear
 wget https://github.com/hokagelegend9999/coklat/raw/refs/heads/main/Bot/kyt.zip
 unzip kyt.zip
